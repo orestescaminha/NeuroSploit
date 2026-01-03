@@ -2,3 +2,4 @@ requests
 anthropic
 openai
 google-generativeai
+mistune
