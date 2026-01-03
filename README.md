@@ -33,8 +33,8 @@ YouTube Demonstration Video: https://youtu.be/SQq1TVwlrxQ
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-repo/NeuroSploitv2.git
-    cd NeuroSploitv2
+    git clone https://github.com/your-repo/NeuroSploit.git
+    cd NeuroSploit
     ```
 
 2.  **Create a virtual environment (recommended):**
@@ -47,7 +47,7 @@ YouTube Demonstration Video: https://youtu.be/SQq1TVwlrxQ
     ```bash
     pip install -r requirements.txt
     ```
-    *(Note: `requirements.txt` should contain `anthropic`, `openai`, `google-generativeai`, `requests` as used in `llm_manager.py`)*
+    *(Note: `requirements.txt` should contain `anthropic`, `openai`, `google-generativeai`, `mistune`, `requests` as used in `llm_manager.py`)*
 
 4.  **Configure API Keys:**
     NeuroSploitv2 uses environment variables for LLM API keys. Set them in your environment or a `.env` file (and load it, if you set up dotenv).
