@@ -187,7 +187,20 @@
         "metasploit": "/usr/bin/msfconsole",
         "burpsuite": "/usr/bin/burpsuite",
         "sqlmap": "/usr/bin/sqlmap",
-        "hydra": "/usr/bin/hydra"
+        "hydra": "/usr/bin/hydra",
+        "subfinder": "/usr/bin/subfinder",
+        "nuclei": "/usr/bin/nuclei", 
+        "whois": "/usr/bin/whois",
+        "nslookup": "/usr/bin/nslookup",
+        "dig": "/usr/bin/dig",
+        "sublist3r": "/usr/bin/sublist3r",
+        "amass": "/usr/bin/amass",
+        "nikto": "/usr/bin/nikto",
+        "openvas": "/usr/sbin/openvas",
+        "netcat": "/usr/bin/netcat",
+        "dirb": "/usr/bin/dirb",
+        "gobuster": "/usr/bin/gobuster",
+        "whatweb": "/usr/bin/whatweb"
     },
     "output": {
         "format": "json",
