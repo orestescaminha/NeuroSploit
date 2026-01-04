@@ -141,6 +141,21 @@
             ],
             "description": "Performs comprehensive penetration tests across various domains."
         },
+        "pentest_web_f1": {
+            "enabled": true,
+            "tools_allowed": [
+                "nmap",
+                "subfinder",
+                "nuclei",
+                "metasploit",
+                "burpsuite",
+                "sqlmap",
+                "hydra",
+                "gobuster",
+                "whatweb"
+            ],
+            "description": "Performs a initial web penetration tests across various domains."            
+        },
         "owasp_expert": {
             "enabled": true,
             "tools_allowed": [
