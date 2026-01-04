@@ -198,7 +198,7 @@ class NeuroSploitv2:
                     color: #e0e0e0;
                 }}
                 .card {{
-                    background-color: #1e1e1e;
+                    background-color: #b3c28a;
                     border: 1px solid #333;
                 }}
                 .card-header {{
