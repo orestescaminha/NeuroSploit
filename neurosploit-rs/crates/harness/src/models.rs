@@ -32,6 +32,11 @@ pub fn providers() -> Vec<Provider> {
             models: vec!["gemini-3-pro", "gemini-2.5-pro", "gemini-2.5-flash"] },
         Provider { key: "nvidia_nim", label: "NVIDIA NIM", base_url: "https://integrate.api.nvidia.com/v1", env_key: "NVIDIA_NIM_API_KEY", kind: "api",
             models: vec!["nvidia/llama-3.3-nemotron-super-49b-v1", "deepseek-ai/deepseek-r1", "qwen/qwen2.5-coder-32b-instruct"] },
+        Provider { key: "nvidia", label: "NVIDIA (public API)", base_url: "https://integrate.api.nvidia.com/v1", env_key: "NVIDIA_API_KEY", kind: "api",
+            models: vec![
+                "nvidia/glm-5.3-flash",
+                "nvidia/nemotron-3-ultra",
+            ] },
         Provider { key: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com/v1", env_key: "DEEPSEEK_API_KEY", kind: "api",
             models: vec!["deepseek-reasoner", "deepseek-chat"] },
         Provider { key: "mistral", label: "Mistral", base_url: "https://api.mistral.ai/v1", env_key: "MISTRAL_API_KEY", kind: "api",
@@ -187,7 +192,7 @@ impl ChatClient {
     ) -> Result<String> {
         let bin = cli_binary_for(provider)
             .ok_or_else(|| anyhow!("no CLI/subscription backend for provider '{}'", provider))?;
-        let prompt = format!("{system}\n\n{user}");
+        let prompt = format!("{}\n\n{}", system, user);
 
         // Claude Code can stream structured events (tools, commands, files) which
         // we surface live as a categorized activity feed, attributed to `label`.
@@ -202,7 +207,7 @@ impl ChatClient {
                 cmd.arg("exec").arg("--model").arg(model)
                     .arg("--dangerously-bypass-approvals-and-sandbox");
                 if let Some(mcp) = mcp_config {
-                    cmd.arg("--config").arg(format!("mcp_config_file={mcp}"));
+                    cmd.arg("--config").arg(format!("mcp_config_file={}", mcp));
                 }
                 cmd.arg("-");
             }
@@ -220,9 +225,7 @@ impl ChatClient {
         let mut child = cmd.spawn().map_err(|e| anyhow!("spawn {} failed: {}", bin, e))?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(prompt.as_bytes()).await?;
-            // Drop closes stdin so the CLI processes the prompt and exits.
         }
-        // Cap a single agentic CLI turn so a stuck tool-loop can't hang the run.
         let out = match tokio::time::timeout(Duration::from_secs(600), child.wait_with_output()).await {
             Ok(r) => r?,
             Err(_) => return Err(anyhow!("{} subscription CLI timed out after 600s", bin)),
@@ -230,15 +233,7 @@ impl ChatClient {
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&out.stderr);
         if !out.status.success() {
-            // The CLI often writes the real reason (rate limit, auth) to stdout,
-            // not stderr — surface both plus the exit code so the error isn't blank.
-            let detail = if !stderr.trim().is_empty() {
-                stderr.trim().to_string()
-            } else if !stdout.is_empty() {
-                stdout.clone()
-            } else {
-                "no output".to_string()
-            };
+            let detail = if !stderr.trim().is_empty() { stderr.trim().to_string() } else if !stdout.is_empty() { stdout.clone() } else { "no output".to_string() };
             return Err(anyhow!(
                 "{} subscription CLI exit {}: {}",
                 bin,
@@ -272,79 +267,59 @@ impl ChatClient {
             cmd.arg("--mcp-config").arg(mcp);
         }
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-        let mut child = cmd.spawn().map_err(|e| anyhow!("spawn claude failed: {e}"))?;
+        let mut child = cmd.spawn().map_err(|e| anyhow!("spawn claude failed: {}", e))?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(prompt.as_bytes()).await?;
         }
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
         let mut lines = BufReader::new(stdout).lines();
-        // Tag every streamed event with the agent label so the feed is attributable.
-        let lbl = if label.is_empty() { String::new() } else { format!("@{label} ") };
+        let lbl = if label.is_empty() { String::new() } else { format!("@{} ", label) };
         let emit = |s: String| {
-            if let Some(tx) = &progress {
-                let _ = tx.try_send(format!("{lbl}{s}"));
-            }
+            if let Some(tx) = &progress { let _ = tx.try_send(format!("{}{}", lbl, s)); }
         };
 
         let mut result = String::new();
         let mut had_err = String::new();
         let read = async {
             while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-                match v.get("type").and_then(|t| t.as_str()) {
-                    Some("assistant") => {
-                        if let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) {
-                            for blk in content {
-                                match blk.get("type").and_then(|t| t.as_str()) {
-                                    Some("text") => {
-                                        if let Some(t) = blk.get("text").and_then(|x| x.as_str()) {
-                                            let t = t.trim();
-                                            if !t.is_empty() {
-                                                emit(format!("ai: {}", truncate(t, 240)));
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    match v.get("type").and_then(|t| t.as_str()) {
+                        Some("assistant") => {
+                            if let Some(content) = v.pointer("/message/content").and_then(|c| c.as_array()) {
+                                for blk in content {
+                                    match blk.get("type").and_then(|t| t.as_str()) {
+                                        Some("text") => {
+                                            if let Some(t) = blk.get("text").and_then(|x| x.as_str()) {
+                                                let t = t.trim();
+                                                if !t.is_empty() { emit(format!("ai: {}", truncate(t, 240))); }
                                             }
                                         }
+                                        Some("tool_use") => {
+                                            let name = blk.get("name").and_then(|x| x.as_str()).unwrap_or("tool");
+                                            let input = blk.get("input");
+                                            emit(tool_event(name, input));
+                                        }
+                                        _ => {}
                                     }
-                                    Some("tool_use") => {
-                                        let name = blk.get("name").and_then(|x| x.as_str()).unwrap_or("tool");
-                                        let input = blk.get("input");
-                                        emit(tool_event(name, input));
-                                    }
-                                    _ => {}
                                 }
                             }
                         }
+                        Some("result") => {
+                            if let Some(r) = v.get("result").and_then(|x| x.as_str()) { result = r.to_string(); }
+                            let ti = v.pointer("/usage/input_tokens").and_then(|x| x.as_u64());
+                            let to = v.pointer("/usage/output_tokens").and_then(|x| x.as_u64());
+                            if ti.is_some() || to.is_some() { emit(format!("tokens: in={} out={}", ti.unwrap_or(0), to.unwrap_or(0))); }
+                            if v.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false) { had_err = v.get("result").and_then(|x| x.as_str()).unwrap_or("error").to_string(); }
+                        }
+                        _ => {}
                     }
-                    Some("result") => {
-                        if let Some(r) = v.get("result").and_then(|x| x.as_str()) {
-                            result = r.to_string();
-                        }
-                        // Token/cost telemetry from the final result event.
-                        let ti = v.pointer("/usage/input_tokens").and_then(|x| x.as_u64());
-                        let to = v.pointer("/usage/output_tokens").and_then(|x| x.as_u64());
-                        let cost = v.get("total_cost_usd").and_then(|x| x.as_f64());
-                        if ti.is_some() || to.is_some() || cost.is_some() {
-                            emit(format!("tokens: in={} out={} cost=${:.4}",
-                                ti.unwrap_or(0), to.unwrap_or(0), cost.unwrap_or(0.0)));
-                        }
-                        if v.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false) {
-                            had_err = v.get("result").and_then(|x| x.as_str()).unwrap_or("error").to_string();
-                        }
-                    }
-                    _ => {}
                 }
             }
         };
-        // Bound the whole streamed turn.
-        if tokio::time::timeout(Duration::from_secs(900), read).await.is_err() {
-            return Err(anyhow!("claude stream timed out after 900s"));
-        }
+        if tokio::time::timeout(Duration::from_secs(900), read).await.is_err() { return Err(anyhow!("claude stream timed out after 900s")); }
         let _ = child.wait().await;
-        if !had_err.is_empty() && result.is_empty() {
-            return Err(anyhow!("claude: {}", truncate(&had_err, 240)));
-        }
-        if result.is_empty() {
-            return Err(anyhow!("claude stream produced no result"));
-        }
+        if !had_err.is_empty() && result.is_empty() { return Err(anyhow!("claude: {}", truncate(&had_err, 240))); }
+        if result.is_empty() { return Err(anyhow!("claude stream produced no result")); }
         Ok(result)
     }
 }
@@ -366,105 +341,8 @@ fn tool_event(name: &str, input: Option<&serde_json::Value>) -> String {
         "WebFetch" => format!("net: fetch {}", s("url")),
         n if n.contains("playwright") || n.contains("browser") => {
             let url = s("url");
-            format!("net: browser {}{}", n.rsplit('_').next().unwrap_or(n), if url.is_empty() { String::new() } else { format!(" {url}") })
+            format!("net: browser {}{}", n.rsplit('_').next().unwrap_or(n), if url.is_empty() { String::new() } else { format!(" {}", url) })
         }
-        other => format!("tool: {other}"),
-    }
-}
-
-/// Map a provider to its local agentic CLI binary (subscription backend).
-pub fn cli_binary_for(provider: &str) -> Option<&'static str> {
-    match provider {
-        "anthropic" => Some("claude"),
-        "openai" => Some("codex"),
-        "xai" => Some("grok"),
-        "gemini" => Some("gemini"),
-        _ => None,
-    }
-}
-
-/// Is `name` an executable found on PATH?
-pub fn binary_in_path(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
-        .unwrap_or(false)
-}
-
-/// Which subscription CLI backends are installed locally.
-pub fn installed_cli_backends() -> Vec<&'static str> {
-    ["claude", "codex", "grok", "gemini"].into_iter().filter(|b| binary_in_path(b)).collect()
-}
-
-/// Does this provider's agentic CLI accept a Playwright MCP config?
-/// Claude Code and Codex do; Gemini/Grok CLIs don't take an MCP-config flag, so
-/// they fall back to their own built-in tools.
-pub fn mcp_supported(provider: &str) -> bool {
-    matches!(provider, "anthropic" | "openai")
-}
-
-/// Best-effort ensure the Playwright MCP server is available locally. Requires
-/// `npx`; pre-warms `@playwright/mcp` so the first agent call isn't a cold start.
-/// Returns Err with a clear reason when it can't be provisioned (caller then
-/// degrades to built-in tools).
-pub fn ensure_playwright_mcp() -> Result<()> {
-    if !binary_in_path("npx") {
-        return Err(anyhow!("npx (Node.js) not found — install Node to use Playwright MCP"));
-    }
-    // `npx -y @playwright/mcp@latest --help` installs the package into the npx
-    // cache on first run; ignore non-zero exit (some versions lack --help) as long
-    // as the package resolves.
-    let out = std::process::Command::new("npx")
-        .args(["-y", "@playwright/mcp@latest", "--help"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    match out {
-        Ok(_) => Ok(()),
-        Err(e) => Err(anyhow!("could not provision @playwright/mcp via npx: {e}")),
-    }
-}
-
-/// Write an `.mcp.json` into `dir` (Playwright by default) and return its path,
-/// so the agentic CLI can drive a real browser during execution. If
-/// `extra_servers` points at a JSON file shaped like `{ "mcpServers": {...} }`
-/// (or just `{...}` of servers), those servers are MERGED in — letting users
-/// plug additional MCP tools into the pipeline to potentiate testing.
-pub fn write_mcp_config(dir: &std::path::Path, extra_servers: Option<&std::path::Path>) -> std::io::Result<std::path::PathBuf> {
-    std::fs::create_dir_all(dir)?;
-    let mut servers = serde_json::json!({
-        "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp@latest", "--headless", "--isolated"] }
-    });
-    if let Some(extra) = extra_servers {
-        if let Ok(txt) = std::fs::read_to_string(extra) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-                let add = v.get("mcpServers").cloned().unwrap_or(v);
-                if let (Some(dst), Some(src)) = (servers.as_object_mut(), add.as_object()) {
-                    for (k, val) in src {
-                        dst.insert(k.clone(), val.clone());
-                    }
-                }
-            }
-        }
-    }
-    let cfg = serde_json::json!({ "mcpServers": servers });
-    let path = dir.join(".mcp.json");
-    std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
-    Ok(path)
-}
-
-impl Default for ChatClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn truncate(s: &str, n: usize) -> String {
-    // Truncate by CHARACTERS, never bytes — slicing `&s[..n]` panics when `n`
-    // lands inside a multi-byte char (e.g. '—'). That panic was crashing agent
-    // tasks and silently dropping their findings.
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        format!("{}…", s.chars().take(n).collect::<String>())
+        other => format!("tool: {}", other),
     }
 }
